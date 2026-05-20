@@ -25,15 +25,14 @@ except Exception as e:
 
 CONFIDENCE_THRESHOLD = 0.5 
 
-# Độ phân giải thấp giúp Pi chạy nhanh hơn gấp 4 lần
+# Kích thước khung hình hiển thị và xử lý (Phần mềm)
 FRAME_WIDTH = 320
 FRAME_HEIGHT = 240
-TARGET_FPS = 8  # Có thể tăng lên 8-10 vì độ phân giải đã giảm
+TARGET_FPS = 8  
 
 # =====================================================================
 # 2. CẤU HÌNH 1 VẠCH DỌC VÀ BIẾN ĐẾM
 # =====================================================================
-# Vạch dọc nằm ở chính giữa khung hình (X = 160)
 LINE_X = int(FRAME_WIDTH / 2)
 
 TOTAL_IN = 0
@@ -47,33 +46,32 @@ next_object_id = 0
 WINDOW_NAME = "Dem nguoi AI (Ban Sieu Nhe)"
 
 # =====================================================================
-# 3. HÀM BẮT SỰ KIỆN CHUỘT (Tọa độ đã thu nhỏ cho 320x240)
+# 3. HÀM BẮT SỰ KIỆN CHUỘT 
 # =====================================================================
 def adjust_counters(event, x, y, flags, param):
     global TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM
     if event == cv2.EVENT_LBUTTONDOWN:
-        if 190 <= y <= 202: # Hàng VÀO
+        if 190 <= y <= 202: 
             if 70 <= x <= 85: TOTAL_IN = max(0, TOTAL_IN - 1)
             elif 95 <= x <= 110: TOTAL_IN += 1
-        elif 205 <= y <= 217: # Hàng RA
+        elif 205 <= y <= 217: 
             if 70 <= x <= 85: TOTAL_OUT = max(0, TOTAL_OUT - 1)
             elif 95 <= x <= 110: TOTAL_OUT += 1
-        elif 220 <= y <= 232: # Hàng TRONG
+        elif 220 <= y <= 232: 
             if 70 <= x <= 85: PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1)
             elif 95 <= x <= 110: PEOPLE_IN_ROOM += 1
 
 # =====================================================================
-# 4. HÀM XÁC ĐỊNH VỊ TRÍ (Đơn giản hóa tuyệt đối)
+# 4. HÀM XÁC ĐỊNH VỊ TRÍ 
 # =====================================================================
 def get_zone(cx):
-    # Nhỏ hơn vạch là Trái, lớn hơn là Phải
     if cx < LINE_X:
         return "LEFT"
     else:
         return "RIGHT"
 
 # =====================================================================
-# 5. KHỞI TẠO CAMERA (HỖ TRỢ LIBCAMERIFY, Ép độ phân giải)
+# 5. KHỞI TẠO CAMERA (Đã sửa lỗi sọc hình)
 # =====================================================================
 class FrameGrabber:
     def __init__(self, src=0):
@@ -82,9 +80,9 @@ class FrameGrabber:
         self.frame = None
         self.lock = threading.Lock()
         
-        # Ép phần cứng camera chạy ở độ phân giải siêu nhẹ
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        # ĐỂ PHẦN CỨNG CHẠY Ở 640x480 ĐỂ KHÔNG BỊ LỖI SỌC ĐEN TRẮNG
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.cap.set(cv2.CAP_PROP_FPS, 30) 
         
         threading.Thread(target=self._reader, daemon=True).start()
@@ -138,6 +136,10 @@ while True:
     
     prev_time = current_time 
 
+    # --- ÉP ĐỘ PHÂN GIẢI BẰNG PHẦN MỀM ĐỂ LÀM NHẸ PI ---
+    # Ảnh gốc 640x480 đẹp, sạch sẽ được bóp lại thành 320x240 ở đây
+    frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+
     (h, w) = frame.shape[:2]
     current_centroids = []
 
@@ -167,7 +169,6 @@ while True:
 
     for (cX, cY, startX, startY, endX, endY) in current_centroids:
         matched_id = None
-        # Giảm khoảng cách dò ID xuống 80 vì khung hình đã thu nhỏ một nửa
         min_distance = 80  
 
         for obj_id, (old_cX, old_cY, zone_history, disappeared) in trackable_objects.items():
@@ -188,24 +189,20 @@ while True:
                 zone_history.append(current_zone)
             disappeared = 0
 
-        # Nén lịch sử
         final_compressed = []
         for z in zone_history:
             if not final_compressed or final_compressed[-1] != z:
                 final_compressed.append(z)
 
-        # Xử lý đếm qua vạch dọc
         if "LEFT" in final_compressed and "RIGHT" in final_compressed:
             idx_left = final_compressed.index("LEFT")
             idx_right = final_compressed.index("RIGHT")
             
-            # Khách đi VÀO (Trái -> Phải)
             if idx_left < idx_right:
                 TOTAL_IN += 1
                 PEOPLE_IN_ROOM += 1
                 zone_history = deque(["RIGHT"], maxlen=10)
                 
-            # Khách đi RA (Phải -> Trái)
             elif idx_right < idx_left:
                 TOTAL_OUT += 1
                 PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1) 
@@ -214,16 +211,13 @@ while True:
         updated_trackable_objects[matched_id] = (cX, cY, zone_history, disappeared)
         seen_ids.add(matched_id)
 
-        # Vẽ Khung vuông AI
         cv2.rectangle(frame, (startX, startY), (endX, endY), (255, 150, 0), 2)
         cv2.circle(frame, (cX, cY), 4, (0, 0, 255), -1)
         
-        # Chữ ID trên đầu đã được làm nhỏ lại cho vừa vặn
         current_zone_str = get_zone(cX)
         text = f"ID:{matched_id} | {current_zone_str}"
         cv2.putText(frame, text, (startX, startY - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 0), 1)
 
-    # Dọn rác
     for obj_id in list(updated_trackable_objects.keys()):
         if obj_id not in seen_ids:
             cX, cY, zone_history, disappeared = updated_trackable_objects[obj_id]
@@ -236,28 +230,22 @@ while True:
     trackable_objects = updated_trackable_objects
 
     # =================================================================
-    # 6. VẼ GIAO DIỆN (Đã thu nhỏ cho 320x240)
+    # 6. VẼ GIAO DIỆN 
     # =================================================================
-    # Vẽ Vạch Dọc
     cv2.line(frame, (LINE_X, 0), (LINE_X, h), (0, 255, 255), 2)
     
     cv2.putText(frame, "RA (<--)", (LINE_X - 65, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
     cv2.putText(frame, "(-->) VAO", (LINE_X + 5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-    # Nền đen cho text
     cv2.rectangle(frame, (0, 180), (120, 240), (0, 0, 0), -1)
 
-    # Text hiển thị
     cv2.putText(frame, f"Vao: {TOTAL_IN}", (5, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
     cv2.putText(frame, f"Ra: {TOTAL_OUT}", (5, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
     cv2.putText(frame, f"Trg: {PEOPLE_IN_ROOM}", (5, 230), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
-    # Vẽ nút bấm đã thu nhỏ
     for y_btn in [190, 205, 220]:
-        # Nút [-]
         cv2.rectangle(frame, (70, y_btn), (85, y_btn + 12), (80, 80, 80), -1)
         cv2.putText(frame, "-", (73, y_btn + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        # Nút [+]
         cv2.rectangle(frame, (95, y_btn), (110, y_btn + 12), (80, 80, 80), -1)
         cv2.putText(frame, "+", (98, y_btn + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
