@@ -38,40 +38,87 @@ TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM = load_data()
 class YoloFastestV2:
     def __init__(self, param_path, bin_path):
         self.net = ncnn.Net()
-        self.net.opt.use_vulkan_compute = False # Dùng 100% CPU NEON
-        self.net.opt.num_threads = 4            # Ép Pi chạy bung 4 nhân
+        self.net.opt.use_vulkan_compute = False # Ép 100% CPU NEON
+        self.net.opt.num_threads = 4            # Bung hết 4 nhân của Pi
         
         self.net.load_param(param_path)
         self.net.load_model(bin_path)
         
-        self.target_size = 256 # Tối ưu hóa cho cỡ 256x256
+        self.target_size = 352 # Kích thước chuẩn Max mAP của Yolo-Fastest V2
         self.mean_vals = [0.0, 0.0, 0.0]
         self.norm_vals = [1/255.0, 1/255.0, 1/255.0]
+        
+        # Sửa lại tên cổng cho đúng với file .param
+        self.input_name = "input.1"
+        self.output_names = ["794", "796"]
 
-    def detect(self, img, conf_thresh=0.4):
+    def detect(self, img, conf_thresh=0.45):
         img_h, img_w = img.shape[:2]
+        
+        # Nén ảnh siêu tốc 
         mat_in = ncnn.Mat.from_pixels_resize(img, ncnn.Mat.PixelType.PIXEL_BGR2RGB, img_w, img_h, self.target_size, self.target_size)
         mat_in.substract_mean_normalize(self.mean_vals, self.norm_vals)
 
         ex = self.net.create_extractor()
-        ex.input("data", mat_in)
-        ret, mat_out = ex.extract("output") 
+        ex.input(self.input_name, mat_in)
         
-        bboxes = []
-        if mat_out:
-            for i in range(mat_out.h):
-                values = mat_out.row(i)
-                prob = values[1]
-                label = int(values[0])
+        boxes = []
+        confidences = []
+        
+        scale_w = img_w / self.target_size
+        scale_h = img_h / self.target_size
+        
+        # Giải mã 2 ma trận đầu ra "794" và "796"
+        for out_name in self.output_names:
+            ret, mat_out = ex.extract(out_name)
+            if not ret: continue
+            
+            # Chuyển NCNN Mat sang Numpy Array (Shape: 95 channels, H, W)
+            out = np.array(mat_out) 
+            
+            # Kênh 15 chứa điểm tự tin (Class Score) của riêng class 0 (Person)
+            cls_score = out[15, :, :] 
+            
+            # Chạy qua 3 Anchors
+            for b in range(3):
+                # Kênh 12, 13, 14 chứa điểm phát hiện vật thể (Objectness)
+                obj_score = out[12 + b, :, :] 
                 
-                # Trong COCO dataset, "person" là class 0
-                if prob > conf_thresh and label == 0: 
-                    x1 = int(values[2] * img_w)
-                    y1 = int(values[3] * img_h)
-                    x2 = int(values[4] * img_w)
-                    y2 = int(values[5] * img_h)
-                    bboxes.append((x1, y1, x2, y2, prob))
-        return bboxes
+                # Nhân 2 điểm số để ra độ tin cậy cuối cùng
+                conf = obj_score * cls_score 
+                
+                # BÍ QUYẾT NUMPY: Lọc ma trận song song để lấy các pixel > threshold (cực nhanh)
+                mask = conf > conf_thresh
+                grid_y, grid_x = np.where(mask)
+                
+                for gy, gx in zip(grid_y, grid_x):
+                    c = conf[gy, gx]
+                    
+                    # Trích xuất 4 kênh tọa độ Box (Đã được mô hình hóa sẵn)
+                    bcx = out[b * 4 + 0, gy, gx]
+                    bcy = out[b * 4 + 1, gy, gx]
+                    bw = out[b * 4 + 2, gy, gx]
+                    bh = out[b * 4 + 3, gy, gx]
+                    
+                    # Phóng tọa độ về đúng tỷ lệ khung hình thật
+                    width = bw * scale_w
+                    height = bh * scale_h
+                    x1 = int((bcx * scale_w) - width / 2.0)
+                    y1 = int((bcy * scale_h) - height / 2.0)
+                    
+                    boxes.append([x1, y1, int(width), int(height)])
+                    confidences.append(float(c))
+                    
+        # NMS: Khử các khung hình đè lên nhau
+        final_boxes = []
+        if len(boxes) > 0:
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_thresh, 0.45)
+            for idx in indices:
+                idx = idx if isinstance(idx, int) else idx[0]
+                x, y, w, h = boxes[idx]
+                final_boxes.append((x, y, x + w, y + h, confidences[idx]))
+                
+        return final_boxes
 
 print("[INFO] Đang nạp lõi NCNN YOLO-Fastest V2...")
 try:
@@ -140,7 +187,10 @@ class FrameGrabber:
         
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        
+        # ---> XÓA HOẶC COMMENT DÒNG NÀY LẠI <---
+        # self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        
         self.cap.set(cv2.CAP_PROP_FPS, 25) 
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
         threading.Thread(target=self._reader, daemon=True).start()
@@ -149,19 +199,30 @@ class FrameGrabber:
     
     def _reader(self):
         while not self.stopped:
-            ret, frame = self.cap.read()
-            if not ret:
-                time.sleep(0.01); continue
+            try:
+                ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    time.sleep(0.01)
+                    continue
                 
-            self.frame_count += 1
-            elapsed = time.time() - self.start_time
-            if elapsed >= 1.0:
-                self.capture_fps = self.frame_count / elapsed
-                self.frame_count = 0
-                self.start_time = time.time()
+                # Đo FPS Camera
+                self.frame_count += 1
+                elapsed = time.time() - self.start_time
+                if elapsed >= 1.0:
+                    self.capture_fps = self.frame_count / elapsed
+                    self.frame_count = 0
+                    self.start_time = time.time()
 
-            small_frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
-            with self.lock: self.frame = small_frame
+                # Nén ảnh về 320x240
+                small_frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+                with self.lock: 
+                    self.frame = small_frame
+                    
+            except cv2.error as e:
+                # Nếu gặp lỗi Reshape do buffer rác, bỏ qua khung hình này!
+                # print(f"[CẢNH BÁO] Lỗi buffer camera: {e}")
+                time.sleep(0.01)
+                continue    
 
     def read(self):
         with self.lock:
