@@ -8,8 +8,12 @@
         body { margin: 0; padding: 20px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: #ffffff; }
         h1 { text-align: center; color: #4CAF50; margin-bottom: 20px; }
         .container { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1200px; margin: 0 auto; }
-        .video-box { flex: 2; min-width: 300px; background: #1e1e1e; padding: 10px; border-radius: 8px; border: 1px solid #333; }
+        .video-box { flex: 2; min-width: 300px; background: #1e1e1e; padding: 10px; border-radius: 8px; border: 1px solid #333; position: relative; }
         .video-box img { width: 100%; height: auto; border-radius: 4px; border: 2px solid #000; }
+        
+        /* Bảng chỉ số FPS hiển thị góc trên luồng Video */
+        .fps-overlay { position: absolute; top: 15px; left: 15px; background: rgba(0, 0, 0, 0.7); padding: 8px 12px; border-radius: 4px; border: 1px solid #555; font-size: 14px; font-family: monospace; color: #00FF00; }
+
         .control-box { flex: 1; min-width: 250px; background: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; display: flex; flex-direction: column; gap: 15px; }
         
         .stat-card { background: #2a2a2a; padding: 15px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
@@ -33,6 +37,10 @@
     
     <div class="container">
         <div class="video-box">
+            <div class="fps-overlay">
+                <div>CAM: <span id="val-cam-fps">0</span> FPS</div>
+                <div style="color: #FFC107;">AI : <span id="val-ai-fps">0</span> FPS</div>
+            </div>
             <img src="/video_feed" alt="Mất kết nối Camera!">
         </div>
 
@@ -67,6 +75,10 @@
                     document.getElementById('val-out').innerText = data.out;
                     document.getElementById('val-room').innerText = data.room;
                     
+                    // Cập nhật thông số hiệu năng
+                    document.getElementById('val-cam-fps').innerText = data.cam_fps;
+                    document.getElementById('val-ai-fps').innerText = data.ai_fps;
+                    
                     const btnRec = document.getElementById('btn-record');
                     if(data.recording) {
                         btnRec.innerText = "ĐANG GHI HÌNH (REC: ON)";
@@ -86,7 +98,6 @@
             }).then(() => updateDashboard());
         }
 
-        // Tự động lấy dữ liệu mới mỗi 1 giây
         setInterval(updateDashboard, 1000);
         updateDashboard();
     </script>

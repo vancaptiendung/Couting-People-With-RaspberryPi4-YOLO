@@ -48,7 +48,6 @@ except:
 CONFIDENCE_THRESHOLD = 0.5 
 FRAME_WIDTH = 320
 FRAME_HEIGHT = 240
-TARGET_FPS = 6  
 LINE_X = int(FRAME_WIDTH / 2)
 MAX_DISAPPEARED = 30     
 trackable_objects = {}
@@ -57,7 +56,7 @@ next_object_id = 0
 VIDEO_DIR = "videos"
 MAX_VIDEOS = 3
 CHUNK_DURATION = 30 * 60  
-recording_enabled = True # Mặc định tự động quay
+recording_enabled = True 
 video_writer = None
 chunk_start_time = 0
 if not os.path.exists(VIDEO_DIR): os.makedirs(VIDEO_DIR)
@@ -82,7 +81,7 @@ class ThreadedVideoWriter:
 def get_zone(cx): return "INSIDE" if cx < LINE_X else "OUTSIDE"
 
 # =====================================================================
-# 3. KHỞI TẠO CAMERA (CHUẨN HD 1280x720 - CÂN TÂM IMX219)
+# 3. KHỞI TẠO CAMERA (NÂNG CẤP FPS CHỤP HÌNH)
 # =====================================================================
 class FrameGrabber:
     def __init__(self, src=0):
@@ -91,10 +90,17 @@ class FrameGrabber:
         self.frame = None
         self.lock = threading.Lock()
         
+        # Biến đếm FPS của riêng camera
+        self.capture_fps = 0
+        self.frame_count = 0
+        self.start_time = time.time()
+        
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        self.cap.set(cv2.CAP_PROP_FPS, 10) 
+        
+        # Ép camera chụp cực nhanh ở 25 FPS
+        self.cap.set(cv2.CAP_PROP_FPS, 25) 
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
         threading.Thread(target=self._reader, daemon=True).start()
 
@@ -105,6 +111,15 @@ class FrameGrabber:
             ret, frame = self.cap.read()
             if not ret:
                 time.sleep(0.01); continue
+                
+            # Đếm số khung hình Camera bắt được mỗi giây
+            self.frame_count += 1
+            elapsed = time.time() - self.start_time
+            if elapsed >= 1.0:
+                self.capture_fps = self.frame_count / elapsed
+                self.frame_count = 0
+                self.start_time = time.time()
+
             small_frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
             with self.lock: self.frame = small_frame
 
@@ -127,9 +142,11 @@ app = Flask(__name__)
 outputFrame = None
 lock = threading.Lock()
 
+# Biến đếm FPS của CPU/AI
+processing_fps = 0
+
 @app.route("/")
 def index():
-    # Tải file index.html từ thư mục templates
     return render_template("index.html")
 
 def generate():
@@ -145,12 +162,18 @@ def generate():
 def video_feed():
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-# API để giao diện web lấy dữ liệu (1 giây gọi 1 lần)
+# API GỬI DATA VỀ DASHBOARD WEB (Đã thêm 2 tham số FPS)
 @app.route("/api/data", methods=["GET"])
 def api_data():
-    return jsonify({"in": TOTAL_IN, "out": TOTAL_OUT, "room": PEOPLE_IN_ROOM, "recording": recording_enabled})
+    return jsonify({
+        "in": TOTAL_IN, 
+        "out": TOTAL_OUT, 
+        "room": PEOPLE_IN_ROOM, 
+        "recording": recording_enabled,
+        "cam_fps": round(vs.capture_fps, 1),
+        "ai_fps": round(processing_fps, 1)
+    })
 
-# API để giao diện web gửi lệnh điều khiển (Khi bấm nút)
 @app.route("/api/action", methods=["POST"])
 def api_action():
     global TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM, recording_enabled
@@ -170,7 +193,7 @@ def api_action():
 def start_flask():
     import logging
     log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR) # Ẩn log rác
+    log.setLevel(logging.ERROR) 
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True, use_reloader=False)
 
 threading.Thread(target=start_flask, daemon=True).start()
@@ -179,7 +202,8 @@ print("\n[HỆ THỐNG ĐÃ SẴN SÀNG] Truy cập Dashboard tại: http://<IP_
 # =====================================================================
 # VÒNG LẶP XỬ LÝ CHÍNH (AI CORE)
 # =====================================================================
-prev_time = 0
+proc_frame_count = 0
+proc_start_time = time.time()
 
 try:
     while True:
@@ -187,10 +211,13 @@ try:
         if frame is None:
             time.sleep(0.01); continue
 
-        current_time = time.time()
-        if (current_time - prev_time) < (1.0 / TARGET_FPS):
-            time.sleep(0.005); continue
-        prev_time = current_time 
+        # Tính toán tốc độ xử lý của CPU cho AI
+        proc_frame_count += 1
+        elapsed = time.time() - proc_start_time
+        if elapsed >= 1.0:
+            processing_fps = proc_frame_count / elapsed
+            proc_frame_count = 0
+            proc_start_time = time.time()
 
         (h, w) = frame.shape[:2]
         current_centroids = []
@@ -244,7 +271,6 @@ try:
             updated_trackable_objects[matched_id] = (cX, cY, zone_history, disappeared)
             seen_ids.add(matched_id)
             
-            # Vẫn vẽ khung tracking để xem qua Web cho trực quan
             cv2.rectangle(frame, (startX, startY), (endX, endY), (255, 150, 0), 2)
             cv2.circle(frame, (cX, cY), 4, (0, 0, 255), -1)
 
@@ -258,14 +284,11 @@ try:
                 else: updated_trackable_objects[obj_id] = (cX, cY, zone_history, disappeared)
         trackable_objects = updated_trackable_objects
 
-        # Chỉ vẽ 1 đường chỉ dẫn vạch kẻ
         cv2.line(frame, (LINE_X, 0), (LINE_X, h), (0, 255, 255), 2)
 
-        # Đẩy hình ảnh sạch (không có UI nút bấm) lên luồng Web
         with lock:
             outputFrame = frame.copy()
 
-        # GHI HÌNH BACKUP
         if recording_enabled:
             if video_writer is None or (time.time() - chunk_start_time) >= CHUNK_DURATION:
                 if video_writer is not None: video_writer.release()
@@ -273,7 +296,8 @@ try:
                 while len(existing_files) >= MAX_VIDEOS:
                     os.remove(existing_files[0]); existing_files.pop(0)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                video_writer = ThreadedVideoWriter(os.path.join(VIDEO_DIR, f"cctv_{timestamp}.avi"), cv2.VideoWriter_fourcc(*'XVID'), TARGET_FPS, (FRAME_WIDTH, FRAME_HEIGHT))
+                # Video sẽ được ghi với tốc độ thực tế của AI để tránh video bị tua nhanh
+                video_writer = ThreadedVideoWriter(os.path.join(VIDEO_DIR, f"cctv_{timestamp}.avi"), cv2.VideoWriter_fourcc(*'XVID'), processing_fps if processing_fps > 0 else 5, (FRAME_WIDTH, FRAME_HEIGHT))
                 chunk_start_time = time.time()
             video_writer.write(frame)
         else:
