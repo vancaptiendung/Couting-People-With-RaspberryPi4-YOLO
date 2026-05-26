@@ -68,15 +68,19 @@ class ThreadedVideoWriter:
         self.writer.release()
 
 # =====================================================================
-# 3. KIẾN TRÚC CAMERA
+# 3. KIẾN TRÚC CAMERA (CHỤP FULL ĐỘ PHÂN GIẢI CẢM BIẾN)
 # =====================================================================
 class CameraThread:
     def __init__(self):
-        print("[INFO] Đang khởi động Picamera2...")
+        print("[INFO] Đang khởi động Picamera2 ở FULL độ phân giải 3280x2464...")
         self.picam2 = Picamera2()
         
-        # [FIX 1] Trở về BGR888 chuẩn và lấy góc rộng (video_configuration)
-        self.config = self.picam2.create_video_configuration(main={"size": (640, 480), "format": "BGR888"})
+        # Mở toang cảm biến lấy 3280x2464 để đảm bảo không một phần mềm nào tự ý cắt lệch góc
+        # Giới hạn 10 FPS để CPU có thời gian bóp mảng dữ liệu khổng lồ này
+        self.config = self.picam2.create_video_configuration(
+            main={"size": (3280, 2464), "format": "RGB888"},
+            controls={"FrameRate": 10} 
+        )
         
         self.picam2.configure(self.config)
         self.picam2.start()
@@ -91,7 +95,7 @@ class CameraThread:
         
         while not self.stopped:
             try:
-                # Array lúc này là BGR chuẩn của OpenCV
+                # Bức ảnh thô khổng lồ 3280x2464
                 frame_raw = self.picam2.capture_array()
                 
                 with frame_lock:
@@ -165,7 +169,7 @@ def api_action():
     return jsonify({"status": "success"})
 
 # =====================================================================
-# 5. LUỒNG AI CHÍNH (ĐẾM NGƯỜI & TRACKING)
+# 5. LUỒNG AI CHÍNH (XỬ LÝ ẢNH BẰNG PHẦN MỀM)
 # =====================================================================
 def main():
     global latest_frame, output_frame_bgr, ai_fps
@@ -186,8 +190,9 @@ def main():
     net.load_model("yolo-fastest-1.1.bin")
     
     AI_SIZE = 320
-    FRAME_W, FRAME_H = 640, 480 
-    LINE_X = FRAME_W // 2 
+    # Đặt khung web là hình vuông 640x640 cho đồng bộ với thuật toán cắt ảnh
+    FRAME_SIZE = 640 
+    LINE_X = FRAME_SIZE // 2 
     
     trackable_objects = {}
     next_object_id = 0
@@ -210,25 +215,25 @@ def main():
                 if latest_frame is None:
                     time.sleep(0.01)
                     continue
-                # frame_raw đang là chuẩn BGR từ Camera
+                # Nhận ảnh 3280x2464 gốc
                 frame_raw = latest_frame.copy()
                 latest_frame = None 
 
             # ==================================================================
-            # [FIX 2] TỐI GIẢN HÓA QUÁ TRÌNH LỌC MÀU
+            # QUY TRÌNH: CẮT CHÍNH GIỮA -> THU NHỎ -> XỬ LÝ -> ĐỔI MÀU CUỐI CÙNG
             # ==================================================================
+            # 1. Cắt lấy hình vuông 2464x2464 chính giữa (Bỏ 408 pixel hai bên rìa)
+            # Dòng này đảm bảo ảnh luôn nằm chuẩn ở giữa, không bị lệch trái/phải.
+            square_raw = frame_raw[:, 408:2872] 
             
-            # Web: Dùng trực tiếp BGR, KHÔNG đổi màu nữa để tránh bị ngược
-            display_frame = frame_raw.copy()
+            # 2. Bóp hình vuông khổng lồ đó xuống 320x320 cho AI
+            resized_ai = cv2.resize(square_raw, (AI_SIZE, AI_SIZE), interpolation=cv2.INTER_LINEAR)
+            in_mat = ncnn.Mat.from_pixels(resized_ai, ncnn.Mat.PixelType.PIXEL_RGB, AI_SIZE, AI_SIZE)
             
-            # AI: Cắt ảnh BGR...
-            resized_ai = cv2.resize(frame_raw, (AI_SIZE, AI_SIZE))
-            
-            # ...Sau đó dùng PIXEL_BGR2RGB để NCNN tự lật sang RGB ở bên trong
-            in_mat = ncnn.Mat.from_pixels(resized_ai, ncnn.Mat.PixelType.PIXEL_BGR2RGB, AI_SIZE, AI_SIZE)
-            
+            # 3. Bóp hình vuông đó xuống 640x640 để làm mảng vẽ hiển thị Web
+            display_frame = cv2.resize(square_raw, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_LINEAR)
             # ==================================================================
-            
+
             in_mat.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
             ex = net.create_extractor()
@@ -245,29 +250,26 @@ def main():
 
                     if score > 0.45 and class_id in [0, 1]: 
                         
-                        # [FIX 3] TỰ ĐỘNG THÍCH ỨNG TỌA ĐỘ BBOX
-                        # Kiểm tra xem mô hình trả về % (0->1) hay pixel thực (0->320)
+                        # Ánh xạ tọa độ siêu chuẩn (Tất cả đều là vuông 1:1)
                         if values[2] <= 1.5: 
-                            # Trường hợp trả về tỷ lệ phần trăm (Normalized)
-                            x1 = int(values[2] * FRAME_W)
-                            y1 = int(values[3] * FRAME_H)
-                            x2 = int(values[4] * FRAME_W)
-                            y2 = int(values[5] * FRAME_H)
+                            x1 = int(values[2] * FRAME_SIZE)
+                            y1 = int(values[3] * FRAME_SIZE)
+                            x2 = int(values[4] * FRAME_SIZE)
+                            y2 = int(values[5] * FRAME_SIZE)
                         else:
-                            # Trường hợp trả về kích thước AI (Absolute)
-                            x1 = int((values[2] / AI_SIZE) * FRAME_W)
-                            y1 = int((values[3] / AI_SIZE) * FRAME_H)
-                            x2 = int((values[4] / AI_SIZE) * FRAME_W)
-                            y2 = int((values[5] / AI_SIZE) * FRAME_H)
+                            x1 = int((values[2] / AI_SIZE) * FRAME_SIZE)
+                            y1 = int((values[3] / AI_SIZE) * FRAME_SIZE)
+                            x2 = int((values[4] / AI_SIZE) * FRAME_SIZE)
+                            y2 = int((values[5] / AI_SIZE) * FRAME_SIZE)
                         
                         x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(FRAME_W, x2), min(FRAME_H, y2)
+                        x2, y2 = min(FRAME_SIZE, x2), min(FRAME_SIZE, y2)
                         
                         cX = int((x1 + x2) / 2.0)
                         cY = int((y1 + y2) / 2.0)
                         current_centroids.append((cX, cY, x1, y1, x2, y2))
                         
-                        # Vẽ khung xanh lá BGR lên luồng hiển thị
+                        # Vẽ khung lên mảng hình hiện tại
                         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         label = f"Nguoi: {score*100:.1f}%"
                         cv2.putText(display_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -336,8 +338,8 @@ def main():
             
             trackable_objects = updated_trackable_objects
 
-            # VẼ VẠCH KẺ & FPS
-            cv2.line(display_frame, (LINE_X, 0), (LINE_X, FRAME_H), (0, 255, 255), 2)
+            # Vẽ vạch kẻ ngay giữa hình vuông
+            cv2.line(display_frame, (LINE_X, 0), (LINE_X, FRAME_SIZE), (0, 255, 255), 2)
             
             frames_ai += 1
             now = time.time()
@@ -346,7 +348,11 @@ def main():
                 frames_ai = 0
                 prev_ai_time = now
 
-            # GHI HÌNH DỰ PHÒNG
+            # ==================================================================
+            # BƯỚC CUỐI CÙNG: ĐẢO MÀU LẠI NHƯ BẠN YÊU CẦU TRƯỚC KHI XUẤT 
+            # ==================================================================
+            display_frame_corrected = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+
             if recording_enabled:
                 if video_writer is None or (time.time() - chunk_start_time) >= CHUNK_DURATION:
                     if video_writer is not None: video_writer.release()
@@ -356,7 +362,7 @@ def main():
                         existing_files.pop(0)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     rec_fps = ai_fps if ai_fps > 0 else 10
-                    video_writer = ThreadedVideoWriter(os.path.join(VIDEO_DIR, f"cctv_{timestamp}.avi"), cv2.VideoWriter_fourcc(*'XVID'), int(rec_fps), (FRAME_W, FRAME_H))
+                    video_writer = ThreadedVideoWriter(os.path.join(VIDEO_DIR, f"cctv_{timestamp}.avi"), cv2.VideoWriter_fourcc(*'XVID'), int(rec_fps), (FRAME_SIZE, FRAME_SIZE))
                     chunk_start_time = time.time()
                 video_writer.write(display_frame)
             else:
