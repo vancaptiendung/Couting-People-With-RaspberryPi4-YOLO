@@ -52,6 +52,7 @@ if not os.path.exists(VIDEO_DIR): os.makedirs(VIDEO_DIR)
 
 class ThreadedVideoWriter:
     def __init__(self, filename, fps, frame_size):
+        # Sử dụng chuẩn MP4V nhẹ nhàng cho Raspberry Pi
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
         self.q = queue.Queue(maxsize=256)
@@ -76,13 +77,14 @@ class ThreadedVideoWriter:
         self.writer.release()
 
 # =====================================================================
-# 3. KIẾN TRÚC CAMERA (HARDWARE DUAL-STREAM CHO V1.3 - FIX YUV)
+# 3. KIẾN TRÚC CAMERA (V1.3 HARDWARE DUAL-STREAM - ISP RESIZE)
 # =====================================================================
 class CameraThread:
     def __init__(self):
         print("[INFO] Đang khởi động Picamera2 (Lấy FULL góc -> Hardware Resize)...")
         self.picam2 = Picamera2()
         
+        # Cấu hình ISP bóp ảnh từ cảm biến xuống thẳng 640x480 định dạng YUV420
         self.config = self.picam2.create_video_configuration(
             main={"size": (1296, 972), "format": "RGB888"},
             lores={"size": (640, 480), "format": "YUV420"},
@@ -102,13 +104,13 @@ class CameraThread:
         
         while not self.stopped:
             try:
-                # Nhận mảng YUV thô từ luồng lores của phần cứng
+                # Nhận YUV thô từ luồng lores của phần cứng
                 frame_yuv = self.picam2.capture_array("lores")
-                # Dịch mảng YUV đó sang RGB bằng OpenCV (siêu nhẹ)
-                frame_rgb = cv2.cvtColor(frame_yuv, cv2.COLOR_YUV2RGB_I420)
+                # Dịch YUV sang BGR chuẩn OpenCV siêu tốc
+                frame_bgr = cv2.cvtColor(frame_yuv, cv2.COLOR_YUV2BGR_I420)
                 
                 with frame_lock:
-                    latest_frame = frame_rgb
+                    latest_frame = frame_bgr
                 
                 frames_count += 1
                 now = time.time()
@@ -152,7 +154,7 @@ def generate_stream():
             yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
             time.sleep(0.04) 
     except (OSError, GeneratorExit):
-        pass
+        pass # Thoát êm ái khi người dùng tắt web hoặc mất mạng
 
 @app.route("/video_feed")
 def video_feed():
@@ -201,11 +203,11 @@ def main():
     net.opt.use_vulkan_compute = False
     net.opt.num_threads = 4 
     
-    # Nạp đúng file V1.1 XL của bạn
-    net.load_param("yolo-fastest-1.1-xl.bin.param")
-    net.load_model("yolo-fastest-1.1-xl.bin.bin")
+    # Nạp đúng file V1.1 XL
+    net.load_param("yolo-fastest-1.1-xl.param")
+    net.load_model("yolo-fastest-1.1-xl.bin")
     
-    AI_SIZE = 320 # Bản V1.1 thường chạy tối ưu ở kích thước 320x320
+    AI_SIZE = 320 
     DISPLAY_W, DISPLAY_H = 640, 480 
     LINE_X = DISPLAY_W // 2 
     
@@ -220,7 +222,7 @@ def main():
     frames_ai = 0
 
     print("\n" + "="*50)
-    print("[HỆ THỐNG ĐÃ SẴN SÀNG - YOLO V1.1 XL]")
+    print("[HỆ THỐNG ĐÃ SẴN SÀNG - YOLO V1.1 XL + CAMERA V1.3]")
     print("Truy cập Web Dashboard tại: http://<IP_CỦA_PI>:5000")
     print("="*50 + "\n")
 
@@ -230,15 +232,16 @@ def main():
                 if latest_frame is None:
                     time.sleep(0.01)
                     continue
-                frame_raw = latest_frame.copy()
+                # Nhận nguyên khung 640x480 từ Camera Hardware (chuẩn BGR)
+                frame_bgr = latest_frame.copy()
                 latest_frame = None 
 
-            display_frame = frame_raw.copy()
+            display_frame = frame_bgr.copy()
             
-            # Sử dụng C++ NEON Resize của NCNN (Rất nhanh, ít tốn CPU)
+            # Sử dụng C++ NEON Resize của NCNN + Chuyển BGR sang RGB cho AI
             in_mat = ncnn.Mat.from_pixels_resize(
                 display_frame, 
-                ncnn.Mat.PixelType.PIXEL_RGB, 
+                ncnn.Mat.PixelType.PIXEL_BGR2RGB, 
                 DISPLAY_W, DISPLAY_H, 
                 AI_SIZE, AI_SIZE
             )
@@ -247,8 +250,8 @@ def main():
 
             # Quy trình xử lý đơn giản gọn gàng của bản V1.1
             ex = net.create_extractor()
-            ex.input("data", in_mat)  # Cổng vào chuẩn của v1.1
-            ret, out_mat = ex.extract("output") # Cổng ra đã đóng gói sẵn
+            ex.input("data", in_mat) 
+            ret, out_mat = ex.extract("output") 
 
             current_centroids = []
             
@@ -258,10 +261,8 @@ def main():
                     class_id = int(values[0])
                     score = values[1]
 
-                    # Nhận diện người (ID 0) hoặc xe (ID 1), hạ ngưỡng 0.30 để bắt người bị che
                     if score > 0.30 and class_id in [0, 1]: 
                         
-                        # Bản V1.1 xử lý tọa độ sẵn, ta chỉ cần quy đổi về kích thước Web 640x480
                         if values[2] <= 1.5: 
                             x1 = int(values[2] * DISPLAY_W)
                             y1 = int(values[3] * DISPLAY_H)
@@ -283,7 +284,7 @@ def main():
                         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(display_frame, f"Nguoi: {score*100:.1f}%", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            # --- THEO DÕI & ĐẾM BẰNG QUÁN TÍNH ---
+            # --- THEO DÕI & ĐẾM QUÁN TÍNH ---
             matches = []
             for i, (cX, cY, startX, startY, endX, endY) in enumerate(current_centroids):
                 for obj_id, obj_data in trackable_objects.items():
@@ -293,7 +294,6 @@ def main():
                     else:
                         old_cX, old_cY, dx, dy, zone_history, disappeared = obj_data
                     
-                    # Dự đoán vị trí nhờ vận tốc
                     pred_cX = old_cX + (dx * (disappeared + 1))
                     pred_cY = old_cY + (dy * (disappeared + 1))
                     d = np.hypot(cX - pred_cX, cY - pred_cY)
@@ -386,11 +386,10 @@ def main():
             timestamp_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             info_str = f"IN: {TOTAL_IN} | OUT: {TOTAL_OUT} | ROOM: {PEOPLE_IN_ROOM}"
             
+            # Khung nền đen mờ để số liệu nổi bật
             cv2.rectangle(display_frame, (5, 5), (420, 65), (0, 0, 0), -1)
             cv2.putText(display_frame, timestamp_str, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.putText(display_frame, info_str, (15, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            display_frame_corrected = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
 
             if recording_enabled:
                 if video_writer is None or (time.time() - chunk_start_time) >= CHUNK_DURATION:
@@ -411,14 +410,15 @@ def main():
                     )
                     chunk_start_time = time.time()
                 
-                video_writer.write(display_frame_corrected)
+                # Truyền khung hình đã đóng chữ vào VideoWriter
+                video_writer.write(display_frame)
             else:
                 if video_writer is not None: 
                     video_writer.release()
                     video_writer = None
 
             with frame_lock:
-                output_frame_bgr = display_frame_corrected.copy()
+                output_frame_bgr = display_frame.copy()
 
     except KeyboardInterrupt:
         print("\n[INFO] Đang lưu dữ liệu và tắt hệ thống...")
