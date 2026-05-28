@@ -43,7 +43,7 @@ cam_fps = 0
 ai_fps = 0
 
 # =====================================================================
-# 2. HỆ THỐNG GHI HÌNH (Lưu 6 Video x 30 Phút)
+# 2. HỆ THỐNG GHI HÌNH (Chống Lag AI & Chống Sập Nguồn)
 # =====================================================================
 VIDEO_DIR = "videos"
 MAX_VIDEOS = 6
@@ -52,32 +52,40 @@ if not os.path.exists(VIDEO_DIR): os.makedirs(VIDEO_DIR)
 
 class ThreadedVideoWriter:
     def __init__(self, filename, fps, frame_size):
-        # Sử dụng chuẩn MP4V nhẹ nhàng cho Raspberry Pi
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Dùng chuẩn nén MJPG trâu bò, chống lỗi PTS, tương thích mọi thiết bị
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         self.writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
-        self.q = queue.Queue(maxsize=256)
+        self.q = queue.Queue(maxsize=128)
         self.stopped = False
-        threading.Thread(target=self._write, daemon=True).start()
+        
+        # Giao toàn quyền ghi file cho luồng phụ
+        self.thread = threading.Thread(target=self._write, daemon=True)
+        self.thread.start()
         
     def write(self, frame):
-        if not self.q.full(): 
+        # Nếu thẻ nhớ ghi chậm, tự động bỏ qua khung hình để cứu sống AI
+        if not self.stopped and not self.q.full(): 
             self.q.put(frame.copy())
             
     def _write(self):
-        while not self.stopped:
+        # Luồng phụ âm thầm ghi file
+        while not self.stopped or not self.q.empty():
             if not self.q.empty(): 
                 self.writer.write(self.q.get())
             else: 
                 time.sleep(0.01) 
                 
+        # Duy nhất luồng phụ này được đóng file
+        self.writer.release()
+                
     def release(self):
         self.stopped = True
-        while not self.q.empty(): 
-            self.writer.write(self.q.get())
-        self.writer.release()
+        # Luồng chính đứng đợi luồng phụ chốt sổ an toàn
+        if self.thread.is_alive():
+            self.thread.join()
 
 # =====================================================================
-# 3. KIẾN TRÚC CAMERA (V1.3 HARDWARE DUAL-STREAM - ISP RESIZE)
+# 3. KIẾN TRÚC CAMERA (HARDWARE DUAL-STREAM CHO V1.3)
 # =====================================================================
 class CameraThread:
     def __init__(self):
@@ -126,7 +134,7 @@ class CameraThread:
         self.picam2.stop()
 
 # =====================================================================
-# 4. MÁY CHỦ WEB API (BẢO VỆ CHỐNG RỚT KẾT NỐI)
+# 4. MÁY CHỦ WEB API (BẢO VỆ CHỐNG SẬP MẠNG)
 # =====================================================================
 app = Flask(__name__)
 
@@ -154,7 +162,7 @@ def generate_stream():
             yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
             time.sleep(0.04) 
     except (OSError, GeneratorExit):
-        pass # Thoát êm ái khi người dùng tắt web hoặc mất mạng
+        pass # Thoát êm ái khi tắt tab web hoặc rớt VPN
 
 @app.route("/video_feed")
 def video_feed():
@@ -203,7 +211,7 @@ def main():
     net.opt.use_vulkan_compute = False
     net.opt.num_threads = 4 
     
-    # Nạp đúng file V1.1 XL
+    # Nạp đúng file V1.1 XL (nhớ chắc chắn tên file đã đúng trong thư mục)
     net.load_param("yolo-fastest-1.1-xl.param")
     net.load_model("yolo-fastest-1.1-xl.bin")
     
@@ -232,7 +240,7 @@ def main():
                 if latest_frame is None:
                     time.sleep(0.01)
                     continue
-                # Nhận nguyên khung 640x480 từ Camera Hardware (chuẩn BGR)
+                # Lấy khung hình trực tiếp 640x480 từ Camera
                 frame_bgr = latest_frame.copy()
                 latest_frame = None 
 
@@ -248,7 +256,7 @@ def main():
 
             in_mat.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
-            # Quy trình xử lý đơn giản gọn gàng của bản V1.1
+            # Quy trình AI
             ex = net.create_extractor()
             ex.input("data", in_mat) 
             ret, out_mat = ex.extract("output") 
@@ -382,11 +390,10 @@ def main():
                 frames_ai = 0
                 prev_ai_time = now
 
-            # Đóng dấu ngày giờ và số liệu lên video
+            # Đóng dấu thông tin lên video
             timestamp_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             info_str = f"IN: {TOTAL_IN} | OUT: {TOTAL_OUT} | ROOM: {PEOPLE_IN_ROOM}"
             
-            # Khung nền đen mờ để số liệu nổi bật
             cv2.rectangle(display_frame, (5, 5), (420, 65), (0, 0, 0), -1)
             cv2.putText(display_frame, timestamp_str, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.putText(display_frame, info_str, (15, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -395,7 +402,8 @@ def main():
                 if video_writer is None or (time.time() - chunk_start_time) >= CHUNK_DURATION:
                     if video_writer is not None: video_writer.release()
                     
-                    existing_files = sorted(glob.glob(os.path.join(VIDEO_DIR, "*.mp4")))
+                    # QUAN TRỌNG: Lưu file chuẩn .avi
+                    existing_files = sorted(glob.glob(os.path.join(VIDEO_DIR, "*.avi")))
                     while len(existing_files) >= MAX_VIDEOS:
                         os.remove(existing_files[0])
                         existing_files.pop(0)
@@ -404,19 +412,20 @@ def main():
                     rec_fps = ai_fps if ai_fps > 0 else 15
                     
                     video_writer = ThreadedVideoWriter(
-                        os.path.join(VIDEO_DIR, f"cctv_{timestamp}.mp4"), 
+                        os.path.join(VIDEO_DIR, f"cctv_{timestamp}.avi"), 
                         int(rec_fps), 
                         (DISPLAY_W, DISPLAY_H)
                     )
                     chunk_start_time = time.time()
                 
-                # Truyền khung hình đã đóng chữ vào VideoWriter
+                # Ghi ảnh thẳng vào luồng phụ
                 video_writer.write(display_frame)
             else:
                 if video_writer is not None: 
                     video_writer.release()
                     video_writer = None
 
+            # Cập nhật ảnh cho Web Dashboard (Giữ nguyên chuẩn màu BGR cho Web)
             with frame_lock:
                 output_frame_bgr = display_frame.copy()
 
