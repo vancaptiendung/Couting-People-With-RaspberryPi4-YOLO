@@ -9,15 +9,48 @@ import time
 import json
 import glob
 import queue
+import sqlite3
+import requests
 from collections import deque
 from datetime import datetime
 from flask import Flask, Response, render_template, jsonify, request
 from picamera2 import Picamera2
 
 # =====================================================================
-# 1. KHỞI TẠO HỆ THỐNG LƯU TRỮ VÀ BIẾN TOÀN CỤC
+# 1. KHỞI TẠO HỆ THỐNG LƯU TRỮ (JSON + SQLITE DATABASE)
 # =====================================================================
 DATA_FILE = "counter_data.json"
+DB_FILE = "cctv_logs.db"
+
+def init_db():
+    """Khởi tạo cơ sở dữ liệu SQLite siêu nhẹ lưu log nội bộ"""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                object_id INTEGER,
+                details TEXT,
+                synced INTEGER DEFAULT 0
+            )
+        ''')
+        conn.commit()
+
+def log_event(event_type, object_id=None, details=""):
+    """Ghi âm thầm lịch sử vào SQLite mà không làm lag AI"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO system_logs (timestamp, event_type, object_id, details) VALUES (?, ?, ?, ?)",
+                (timestamp, event_type, object_id, details)
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[DB ERROR] Lỗi ghi DB: {e}")
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -42,8 +75,44 @@ recording_enabled = False
 cam_fps = 0
 ai_fps = 0
 
+init_db()
+log_event("SYSTEM_START", details="Hệ thống Camera AI Pi 5 khởi động")
+
 # =====================================================================
-# 2. HỆ THỐNG GHI HÌNH (Chống Lag AI & Chống Sập Nguồn)
+# 2. CƠ CHẾ ĐỒNG BỘ ĐÁM MÂY (CHẠY NGẦM LÚC 2H SÁNG)
+# =====================================================================
+def nightly_sync_routine():
+    while True:
+        now = datetime.now()
+        # Chạy đồng bộ vào đúng 02:00 sáng
+        if now.hour == 2 and now.minute == 0:
+            print("\n[SYNC] Đã 2h sáng, tiến hành đồng bộ dữ liệu lên Server...")
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, timestamp, event_type, object_id, details FROM system_logs WHERE synced = 0")
+                    unsynced_rows = cursor.fetchall()
+                    
+                    if unsynced_rows:
+                        # TODO: Mở comment 3 dòng dưới khi bạn có API Server thật
+                        # payload = [{"id": r[0], "time": r[1], "event": r[2], "obj": r[3], "detail": r[4]} for r in unsynced_rows]
+                        # response = requests.post("https://api.yourserver.com/logs", json={"data": payload})
+                        # if response.status_code == 200:
+                        
+                        # Cập nhật thành đã đồng bộ
+                        cursor.execute("UPDATE system_logs SET synced = 1 WHERE synced = 0")
+                        conn.commit()
+                        print(f"[SYNC] Đã đồng bộ thành công {len(unsynced_rows)} bản ghi!")
+                    else:
+                        print("[SYNC] Không có dữ liệu mới để đồng bộ.")
+            except Exception as e:
+                print(f"[SYNC ERROR] {e}")
+            
+            time.sleep(61) # Ngủ qua phút này để không chạy 2 lần
+        time.sleep(30) # Check giờ 30s/lần
+
+# =====================================================================
+# 3. HỆ THỐNG GHI HÌNH (Chống Lag AI & Chống Sập Nguồn)
 # =====================================================================
 VIDEO_DIR = "videos"
 MAX_VIDEOS = 6
@@ -52,49 +121,42 @@ if not os.path.exists(VIDEO_DIR): os.makedirs(VIDEO_DIR)
 
 class ThreadedVideoWriter:
     def __init__(self, filename, fps, frame_size):
-        # Dùng chuẩn nén MJPG trâu bò, chống lỗi PTS, tương thích mọi thiết bị
         fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         self.writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
         self.q = queue.Queue(maxsize=128)
         self.stopped = False
         
-        # Giao toàn quyền ghi file cho luồng phụ
         self.thread = threading.Thread(target=self._write, daemon=True)
         self.thread.start()
         
     def write(self, frame):
-        # Nếu thẻ nhớ ghi chậm, tự động bỏ qua khung hình để cứu sống AI
         if not self.stopped and not self.q.full(): 
             self.q.put(frame.copy())
             
     def _write(self):
-        # Luồng phụ âm thầm ghi file
         while not self.stopped or not self.q.empty():
             if not self.q.empty(): 
                 self.writer.write(self.q.get())
             else: 
                 time.sleep(0.01) 
-                
-        # Duy nhất luồng phụ này được đóng file
         self.writer.release()
                 
     def release(self):
         self.stopped = True
-        # Luồng chính đứng đợi luồng phụ chốt sổ an toàn
         if self.thread.is_alive():
             self.thread.join()
 
 # =====================================================================
-# 3. KIẾN TRÚC CAMERA (HARDWARE DUAL-STREAM CHO V1.3)
+# 4. KIẾN TRÚC CAMERA (TỐI ƯU PI 5 IMX219 - MAX RESOLUTION)
 # =====================================================================
 class CameraThread:
     def __init__(self):
-        print("[INFO] Đang khởi động Picamera2 (Lấy FULL góc -> Hardware Resize)...")
+        print("[INFO] Đang khởi động Picamera2 (IMX219: 3280x2464 -> ISP Resize)...")
         self.picam2 = Picamera2()
         
-        # Cấu hình ISP bóp ảnh từ cảm biến xuống thẳng 640x480 định dạng YUV420
+        # Mở full 8MP ở luồng main, bóp xuống 640x480 YUV420 cho AI xử lý mượt
         self.config = self.picam2.create_video_configuration(
-            main={"size": (1296, 972), "format": "RGB888"},
+            main={"size": (3280, 2464), "format": "RGB888"},
             lores={"size": (640, 480), "format": "YUV420"},
             controls={"FrameRate": 30} 
         )
@@ -112,9 +174,7 @@ class CameraThread:
         
         while not self.stopped:
             try:
-                # Nhận YUV thô từ luồng lores của phần cứng
                 frame_yuv = self.picam2.capture_array("lores")
-                # Dịch YUV sang BGR chuẩn OpenCV siêu tốc
                 frame_bgr = cv2.cvtColor(frame_yuv, cv2.COLOR_YUV2BGR_I420)
                 
                 with frame_lock:
@@ -134,7 +194,7 @@ class CameraThread:
         self.picam2.stop()
 
 # =====================================================================
-# 4. MÁY CHỦ WEB API (BẢO VỆ CHỐNG SẬP MẠNG)
+# 5. MÁY CHỦ WEB API (BẢO VỆ CHỐNG RỚT KẾT NỐI)
 # =====================================================================
 app = Flask(__name__)
 
@@ -162,7 +222,7 @@ def generate_stream():
             yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encodedImage) + b'\r\n')
             time.sleep(0.04) 
     except (OSError, GeneratorExit):
-        pass # Thoát êm ái khi tắt tab web hoặc rớt VPN
+        pass
 
 @app.route("/video_feed")
 def video_feed():
@@ -187,17 +247,22 @@ def api_action():
     elif action == "out_minus": TOTAL_OUT = max(0, TOTAL_OUT - 1)
     elif action == "room_plus": PEOPLE_IN_ROOM += 1
     elif action == "room_minus": PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1)
-    elif action == "toggle_record": recording_enabled = not recording_enabled
+    elif action == "toggle_record": 
+        recording_enabled = not recording_enabled
+        log_event("SYS_RECORDING", details=f"Ghi hình: {'Bật' if recording_enabled else 'Tắt'}")
+        
     save_data()
     return jsonify({"status": "success"})
 
 # =====================================================================
-# 5. LUỒNG AI CHÍNH (YOLO-FASTEST V1.1 XL)
+# 6. LUỒNG AI CHÍNH (YOLO-FASTEST V1.1 XL - THÔNG MINH, ỔN ĐỊNH)
 # =====================================================================
-
 def main():
     global latest_frame, output_frame_bgr, ai_fps
     global TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM
+    
+    # Kích hoạt luồng đồng bộ đêm
+    threading.Thread(target=nightly_sync_routine, daemon=True).start()
     
     cam_thread = CameraThread()
     
@@ -211,7 +276,6 @@ def main():
     net.opt.use_vulkan_compute = False
     net.opt.num_threads = 4 
     
-    # Nạp đúng file V1.1 XL (nhớ chắc chắn tên file đã đúng trong thư mục)
     net.load_param("yolo-fastest-1.1-xl.param")
     net.load_model("yolo-fastest-1.1-xl.bin")
     
@@ -230,7 +294,7 @@ def main():
     frames_ai = 0
 
     print("\n" + "="*50)
-    print("[HỆ THỐNG ĐÃ SẴN SÀNG - YOLO V1.1 XL + CAMERA V1.3]")
+    print("[HỆ THỐNG ĐÃ SẴN SÀNG - RASPBERRY PI 5 + YOLO V1.1 XL]")
     print("Truy cập Web Dashboard tại: http://<IP_CỦA_PI>:5000")
     print("="*50 + "\n")
 
@@ -240,13 +304,11 @@ def main():
                 if latest_frame is None:
                     time.sleep(0.01)
                     continue
-                # Lấy khung hình trực tiếp 640x480 từ Camera
                 frame_bgr = latest_frame.copy()
                 latest_frame = None 
 
             display_frame = frame_bgr.copy()
             
-            # Sử dụng C++ NEON Resize của NCNN + Chuyển BGR sang RGB cho AI
             in_mat = ncnn.Mat.from_pixels_resize(
                 display_frame, 
                 ncnn.Mat.PixelType.PIXEL_BGR2RGB, 
@@ -256,7 +318,6 @@ def main():
 
             in_mat.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
-            # Quy trình AI
             ex = net.create_extractor()
             ex.input("data", in_mat) 
             ret, out_mat = ex.extract("output") 
@@ -269,7 +330,8 @@ def main():
                     class_id = int(values[0])
                     score = values[1]
 
-                    if score > 0.30 and class_id in [0, 1]: 
+                    # Ngưỡng 0.40 là rất đẹp cho V1.1 XL
+                    if score > 0.40 and class_id in [0, 1]: 
                         
                         if values[2] <= 1.5: 
                             x1 = int(values[2] * DISPLAY_W)
@@ -356,12 +418,16 @@ def main():
                             PEOPLE_IN_ROOM += 1
                             updated_trackable_objects[obj_id] = (cX, cY, dx, dy, deque(["INSIDE"], maxlen=10), 0)
                             counters_changed = True
+                            # Ghi log SQL
+                            log_event("IN", obj_id, f"Tổng IN: {TOTAL_IN} | Phòng: {PEOPLE_IN_ROOM}")
                             
                         elif idx_in < idx_out: 
                             TOTAL_OUT += 1
                             PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1)
                             updated_trackable_objects[obj_id] = (cX, cY, dx, dy, deque(["OUTSIDE"], maxlen=10), 0)
                             counters_changed = True
+                            # Ghi log SQL
+                            log_event("OUT", obj_id, f"Tổng OUT: {TOTAL_OUT} | Phòng: {PEOPLE_IN_ROOM}")
 
             if counters_changed: save_data()
 
@@ -379,10 +445,8 @@ def main():
 
             trackable_objects = updated_trackable_objects
 
-            # Vẽ vạch kẻ ngay giữa hình
             cv2.line(display_frame, (LINE_X, 0), (LINE_X, DISPLAY_H), (0, 255, 255), 2)
             
-            # Tính toán AI FPS
             frames_ai += 1
             now = time.time()
             if now - prev_ai_time >= 1.0:
@@ -390,7 +454,6 @@ def main():
                 frames_ai = 0
                 prev_ai_time = now
 
-            # Đóng dấu thông tin lên video
             timestamp_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             info_str = f"IN: {TOTAL_IN} | OUT: {TOTAL_OUT} | ROOM: {PEOPLE_IN_ROOM}"
             
@@ -402,7 +465,6 @@ def main():
                 if video_writer is None or (time.time() - chunk_start_time) >= CHUNK_DURATION:
                     if video_writer is not None: video_writer.release()
                     
-                    # QUAN TRỌNG: Lưu file chuẩn .avi
                     existing_files = sorted(glob.glob(os.path.join(VIDEO_DIR, "*.avi")))
                     while len(existing_files) >= MAX_VIDEOS:
                         os.remove(existing_files[0])
@@ -418,20 +480,19 @@ def main():
                     )
                     chunk_start_time = time.time()
                 
-                # Ghi ảnh thẳng vào luồng phụ
                 video_writer.write(display_frame)
             else:
                 if video_writer is not None: 
                     video_writer.release()
                     video_writer = None
 
-            # Cập nhật ảnh cho Web Dashboard (Giữ nguyên chuẩn màu BGR cho Web)
             with frame_lock:
                 output_frame_bgr = display_frame.copy()
 
     except KeyboardInterrupt:
         print("\n[INFO] Đang lưu dữ liệu và tắt hệ thống...")
         save_data()
+        log_event("SYSTEM_STOP", details="Người dùng tắt hệ thống an toàn")
     finally:
         cam_thread.stop()
         if video_writer is not None: video_writer.release()

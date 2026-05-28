@@ -17,6 +17,44 @@ from picamera2 import Picamera2
 # =====================================================================
 # 1. KHỞI TẠO HỆ THỐNG LƯU TRỮ VÀ BIẾN TOÀN CỤC
 # =====================================================================
+import sqlite3
+import requests 
+
+DB_FILE = "inoutlog.db"
+
+def init_db():
+    # Tạo bảng nếu chưa tồn tại
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS system_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                object_id INTEGER,
+                details TEXT,
+                synced INTEGER DEFAULT 0
+            )
+        ''')
+        conn.commit()
+
+def log_event(event_type, object_id=None, details=""):
+    """Ghi lịch sử vào SQLite"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO system_logs (timestamp, event_type, object_id, details) VALUES (?, ?, ?, ?)",
+                (timestamp, event_type, object_id, details)
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[DB ERROR] Không thể ghi log: {e}")
+
+init_db()
+log_event("SYSTEM_START", details="Hệ thống Camera AI Raspberry Pi 5 khởi động")
+# load data
 DATA_FILE = "counter_data.json"
 
 def load_data():
