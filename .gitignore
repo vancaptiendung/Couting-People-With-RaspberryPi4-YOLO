@@ -1,3 +1,5 @@
 videos/
 videos/*
-*.json
+counter_data.json
+counter_data.jsonl
+counter_data.csv
