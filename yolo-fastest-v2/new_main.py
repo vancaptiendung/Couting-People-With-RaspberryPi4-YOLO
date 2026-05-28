@@ -191,20 +191,25 @@ def api_action():
 # 5. LUỒNG AI CHÍNH VÀ BỘ GIẢI MÃ YOLO-FASTEST V2
 # =====================================================================
 def get_proposals(feat_mat, stride, anchors, prob_threshold, display_w, display_h, ai_size):
-    """Bộ giải mã Numpy độc lập: Đập phẳng (Flatten) mảng để trị dứt điểm lỗi Shape NCNN"""
     grid_h = ai_size // stride
     grid_w = ai_size // stride
     
+    # 1. Đập phẳng mảng thô từ NCNN
     feat_flat = np.array(feat_mat).flatten()
+    
+    # 2. Tính số Kênh tự động (Ví dụ: 45980 / (22 * 22) = 95 Kênh)
     c = len(feat_flat) // (grid_h * grid_w)
     
-    feat = feat_flat.reshape((grid_h, grid_w, c))
-    feat = feat.transpose(2, 0, 1)
-
+    # 3. LẮP RÁP CHUẨN XÁC: NCNN lưu bộ nhớ theo thứ tự (Kênh, Cao, Rộng).
+    # Reshape thẳng vào khuôn này, tuyệt đối không dùng transpose lật mảng.
+    feat = feat_flat.reshape((c, grid_h, grid_w))
+    
     num_anchors = 3
-    reg = feat[0:12, :, :].reshape((num_anchors, 4, grid_h, grid_w)) 
-    obj = feat[12:15, :, :]                                          
-    cls = feat[15:, :, :]                                            
+    
+    # 4. Cắt dữ liệu theo đúng kiến trúc Decoupled Head của YOLO-Fastest V2
+    reg = feat[0:12, :, :].reshape((num_anchors, 4, grid_h, grid_w)) # 12 kênh tọa độ
+    obj = feat[12:15, :, :]                                          # 3 kênh tự tin
+    cls = feat[15:, :, :]                                            # 80 kênh class (Dùng chung)
 
     def sigmoid(x):
         return 1.0 / (1.0 + np.exp(-np.clip(x, -50, 50)))
@@ -219,12 +224,14 @@ def get_proposals(feat_mat, stride, anchors, prob_threshold, display_w, display_
     for i in range(len(anch_idx)):
         a, y, x = anch_idx[i], y_idx[i], x_idx[i]
         
+        # Phân loại (Lấy kênh class tại vị trí y, x - dùng chung cho cả 3 Anchor)
         cls_vals = cls[:, y, x]
         cls_id = np.argmax(cls_vals)
         cls_score_val = sigmoid(cls_vals[cls_id])
         
         score = obj_score[a, y, x] * cls_score_val
         
+        # Chỉ nhận ID 0 (Người) và ID 1 (Xe)
         if score > prob_threshold and cls_id in [0, 1]:
             dx = sigmoid(reg[a, 0, y, x])
             dy = sigmoid(reg[a, 1, y, x])
@@ -315,7 +322,7 @@ def main():
             ret2, out_mat2 = ex.extract("796") 
 
             boxes, scores, class_ids = [], [], []
-            CONFIDENCE_THRESHOLD = 0.30
+            CONFIDENCE_THRESHOLD = 0.45
 
             if out_mat1:
                 anchors_16 = [[12, 18], [37, 49], [52, 132]]
