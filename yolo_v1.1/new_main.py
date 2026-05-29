@@ -18,6 +18,16 @@ from datetime import datetime
 from flask import Flask, Response, render_template, jsonify, request
 from picamera2 import Picamera2
 
+# LOAD API KEY 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+API_KEY = os.getenv("API_KEY")
+
+if not API_KEY:
+    raise ValueError("[LỖI BẢO MẬT] Không tìm thấy API_KEY trong file .env!")
+
 # =====================================================================
 # 1. KHỞI TẠO HỆ THỐNG LƯU TRỮ (JSON + SQLITE DATABASE)
 # =====================================================================
@@ -88,34 +98,80 @@ log_event("SYSTEM_START", details="Hệ thống Camera AI Pi 5 khởi động")
 # 2. CƠ CHẾ ĐỒNG BỘ ĐÁM MÂY (CHẠY NGẦM LÚC 2H SÁNG)
 # =====================================================================
 def nightly_sync_routine():
+    global TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM
+    
+    # THÔNG TIN API CỦA BẠN (Sửa lại cho đúng web AZDIGI của bạn)
+    API_URL = "https://smilecourse.vantechlablearnhacking.id.vn/api/save_logs.php"
+    
+    
     while True:
         now = datetime.now()
-        # Chạy đồng bộ vào đúng 02:00 sáng
-        if now.hour == 2 and now.minute == 0:
-            print("\n[SYNC] Đã 2h sáng, tiến hành đồng bộ dữ liệu lên Server...")
+        # Chạy chuẩn xác vào 00:00 mỗi đêm
+        if now.hour == 0 and now.minute == 0:
+            print("\n[NIGHT ROUTINE] Đã 0h, tiến hành đóng gói và gửi dữ liệu lên Server...")
             try:
                 with sqlite3.connect(DB_FILE) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("SELECT id, timestamp, event_type, object_id, details FROM system_logs WHERE synced = 0")
-                    unsynced_rows = cursor.fetchall()
+                    # Lấy TOÀN BỘ dữ liệu của ngày hôm đó
+                    cursor.execute("SELECT timestamp, event_type, object_id, details FROM system_logs")
+                    all_rows = cursor.fetchall()
                     
-                    if unsynced_rows:
-                        # TODO: Mở comment 3 dòng dưới khi bạn có API Server thật
-                        # payload = [{"id": r[0], "time": r[1], "event": r[2], "obj": r[3], "detail": r[4]} for r in unsynced_rows]
-                        # response = requests.post("https://api.yourserver.com/logs", json={"data": payload})
-                        # if response.status_code == 200:
+                    if all_rows:
+                        # 1. Đóng gói thành JSON
+                        payload = {
+                            "api_key": API_KEY,
+                            "date": now.strftime("%Y-%m-%d"),
+                            "summary": {
+                                "total_in": TOTAL_IN,
+                                "total_out": TOTAL_OUT,
+                                "left_in_room": PEOPLE_IN_ROOM
+                            },
+                            "logs": [{"time": r[0], "event": r[1], "obj": r[2], "detail": r[3]} for r in all_rows]
+                        }
                         
-                        # Cập nhật thành đã đồng bộ
-                        cursor.execute("UPDATE system_logs SET synced = 1 WHERE synced = 0")
-                        conn.commit()
-                        print(f"[SYNC] Đã đồng bộ thành công {len(unsynced_rows)} bản ghi!")
+                        # 2. Gửi đi (Timeout 10 giây để không bị treo)
+                        response = requests.post(API_URL, json=payload, timeout=10)
+                        
+                        # 3. Kiểm tra Server trả về OK không
+                        if response.status_code == 200 and response.json().get("status") == "success":
+                            print(f"[NIGHT ROUTINE] Đã gửi thành công {len(all_rows)} bản ghi!")
+                            
+                            # XÓA SẠCH DATABASE CŨ
+                            cursor.execute("DELETE FROM system_logs")
+                            # Đưa id tự tăng (AUTOINCREMENT) về lại 0
+                            cursor.execute("DELETE FROM sqlite_sequence WHERE name='system_logs'")
+                            conn.commit()
+                            print("[NIGHT ROUTINE] Đã dọn dẹp xong SQLite cho ngày mới.")
+                            
+                            # RESET CÁC CHỈ SỐ VỀ 0
+                            with frame_lock:
+                                TOTAL_IN = 0
+                                TOTAL_OUT = 0
+                                PEOPLE_IN_ROOM = 0
+                            save_data()
+                            print("[NIGHT ROUTINE] Đã reset bộ đếm về 0. Bắt đầu ngày mới!")
+                            
+                        else:
+                            print(f"[NIGHT ROUTINE ERROR] Server từ chối: {response.text}")
                     else:
-                        print("[SYNC] Không có dữ liệu mới để đồng bộ.")
+                        print("[NIGHT ROUTINE] Không có dữ liệu để gửi.")
+                        
+                        # Vẫn reset bộ đếm về 0 dù không có ai qua lại
+                        with frame_lock:
+                            TOTAL_IN = 0
+                            TOTAL_OUT = 0
+                            PEOPLE_IN_ROOM = 0
+                        save_data()
+                        
+            except requests.exceptions.RequestException as e:
+                print(f"[NIGHT ROUTINE ERROR] Lỗi mạng, không thể kết nối tới AZDIGI: {e}")
             except Exception as e:
-                print(f"[SYNC ERROR] {e}")
+                print(f"[NIGHT ROUTINE ERROR] Lỗi hệ thống: {e}")
             
-            time.sleep(61) # Ngủ qua phút này để không chạy 2 lần
-        time.sleep(30) # Check giờ 30s/lần
+            # Ngủ 61 giây để bước qua phút 00:01, tránh việc chạy 2 lần
+            time.sleep(61)
+            
+        time.sleep(30)
 
 # =====================================================================
 # 3. HỆ THỐNG GHI HÌNH (Chống Lag AI & Chống Sập Nguồn)
@@ -343,22 +399,22 @@ def api_action():
     action = request.json.get("action")
     if action == "in_plus": 
         TOTAL_IN += 1
-        PEOPLE_IN_ROOM += 1
+        PEOPLE_IN_ROOM = TOTAL_IN - TOTAL_OUT
         log_event("MANUAL_IN", "User manually added a person", details=f"Tổng IN: {TOTAL_IN} | Phòng: {PEOPLE_IN_ROOM}")
     
     elif action == "in_minus" and TOTAL_IN > TOTAL_OUT: 
         TOTAL_IN = TOTAL_IN - 1
-        PEOPLE_IN_ROOM = PEOPLE_IN_ROOM - 1
+        PEOPLE_IN_ROOM = TOTAL_IN - TOTAL_OUT
         log_event("MANUAL_IN", "User manually removed a person", details=f"Tổng IN: {TOTAL_IN} | Phòng: {PEOPLE_IN_ROOM}")
     
     elif action == "out_plus" and TOTAL_OUT < TOTAL_IN: 
         TOTAL_OUT += 1
-        PEOPLE_IN_ROOM = PEOPLE_IN_ROOM - 1
+        PEOPLE_IN_ROOM = TOTAL_IN - TOTAL_OUT
         log_event("MANUAL_OUT", "User manually added a person", details=f"Tổng OUT: {TOTAL_OUT} | Phòng: {PEOPLE_IN_ROOM}")
     
     elif action == "out_minus" and TOTAL_OUT > 0: 
-        TOTAL_OUT = max(0, TOTAL_OUT - 1)
-        PEOPLE_IN_ROOM += 1
+        TOTAL_OUT = TOTAL_OUT - 1
+        PEOPLE_IN_ROOM = TOTAL_IN - TOTAL_OUT
         log_event("MANUAL_OUT", "User manually removed a person", details=f"Tổng OUT: {TOTAL_OUT} | Phòng: {PEOPLE_IN_ROOM}")
 
     # elif action == "room_plus": PEOPLE_IN_ROOM += 1
@@ -440,13 +496,17 @@ def main():
 
             current_centroids = []
             
+            # Tạo các mảng tạm để chứa dữ liệu trước khi lọc
+            boxes = []
+            scores = []
+            class_ids = []
+            
             if out_mat:
                 for i in range(out_mat.h):
                     values = out_mat.row(i)
                     class_id = int(values[0])
                     score = values[1]
 
-                    # Ngưỡng 0.40 là rất đẹp cho V1.1 XL
                     if score > 0.40 and class_id in [0, 1]: 
                         
                         if values[2] <= 1.5: 
@@ -463,13 +523,35 @@ def main():
                         x1, y1 = max(0, x1), max(0, y1)
                         x2, y2 = min(DISPLAY_W, x2), min(DISPLAY_H, y2)
                         
+                        # Chuyển đổi tọa độ sang dạng [x, y, chiều_rộng, chiều_cao] cho hàm NMS
+                        boxes.append([x1, y1, x2 - x1, y2 - y1])
+                        scores.append(float(score))
+                        class_ids.append(class_id)
+
+            # ==============================================================
+            # BỘ LỌC NMS: TIÊU DIỆT CÁC HỘP TRÒNG LÊN NHAU
+            # ==============================================================
+            if len(boxes) > 0:
+                # Tham số 0.4 cuối cùng là độ nhạy đè lấp. 
+                # Nếu 2 hộp đè lên nhau > 40%, hộp điểm thấp sẽ bị xóa.
+                indices = cv2.dnn.NMSBoxes(boxes, scores, 0.40, 0.40)
+                
+                if len(indices) > 0:
+                    for i in indices.flatten():
+                        x, y, w, h = boxes[i]
+                        score = scores[i]
+                        
+                        # Tái tạo lại tọa độ x1, y1, x2, y2
+                        x1, y1 = x, y
+                        x2, y2 = x + w, y + h
+                        
                         cX = int((x1 + x2) / 2.0)
                         cY = int((y1 + y2) / 2.0)
                         current_centroids.append((cX, cY, x1, y1, x2, y2))
                         
                         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(display_frame, f"Nguoi: {score*100:.1f}%", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
+            
             # --- THEO DÕI & ĐẾM QUÁN TÍNH ---
             matches = []
             for i, (cX, cY, startX, startY, endX, endY) in enumerate(current_centroids):
@@ -531,15 +613,15 @@ def main():
                         
                         if idx_out < idx_in: 
                             TOTAL_IN += 1
-                            PEOPLE_IN_ROOM += 1
+                            PEOPLE_IN_ROOM = TOTAL_IN - TOTAL_OUT
                             updated_trackable_objects[obj_id] = (cX, cY, dx, dy, deque(["INSIDE"], maxlen=10), 0)
                             counters_changed = True
                             # Ghi log SQL
                             log_event("IN", obj_id, f"Tổng IN: {TOTAL_IN} | Phòng: {PEOPLE_IN_ROOM}")
                             
-                        elif idx_in < idx_out: 
+                        elif idx_in < idx_out and PEOPLE_IN_ROOM > 0: 
                             TOTAL_OUT += 1
-                            PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1)
+                            PEOPLE_IN_ROOM = TOTAL_IN - TOTAL_OUT
                             updated_trackable_objects[obj_id] = (cX, cY, dx, dy, deque(["OUTSIDE"], maxlen=10), 0)
                             counters_changed = True
                             # Ghi log SQL
