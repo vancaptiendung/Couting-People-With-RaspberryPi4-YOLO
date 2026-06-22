@@ -170,9 +170,81 @@ def get_storage_free_gb():
     except:
         return 0.0
 
+def format_log_entry(row):
+    log_id, timestamp, event_type, object_id, details, synced = row
+    event_key = (event_type or "").upper()
+
+    if event_key == "SYSTEM_START":
+        title = "Khởi động hệ thống"
+        message = details or "Hệ thống đã khởi động"
+        tone = "success"
+    elif event_key == "SYSTEM_STOP":
+        title = "Hệ thống dừng"
+        message = details or "Hệ thống đã dừng"
+        tone = "warning"
+    elif event_key.startswith("MANUAL_IN"):
+        title = "Điều chỉnh IN"
+        message = details or "Người dùng chỉnh bộ đếm vào"
+        tone = "info"
+    elif event_key.startswith("MANUAL_OUT"):
+        title = "Điều chỉnh OUT"
+        message = details or "Người dùng chỉnh bộ đếm ra"
+        tone = "info"
+    elif event_key in {"TOGGLE_RECORD", "RECORDING_ON", "RECORDING_OFF"}:
+        title = "Trạng thái ghi hình"
+        message = details or "Đã thay đổi trạng thái ghi hình"
+        tone = "warning"
+    else:
+        title = event_type or "Sự kiện"
+        message = details or "Không có chi tiết"
+        tone = "neutral"
+
+    return {
+        "id": log_id,
+        "timestamp": timestamp,
+        "title": title,
+        "message": message,
+        "tone": tone,
+        "event_type": event_type,
+        "synced": synced,
+    }
+
+def fetch_log_rows(before_id=None, limit=30):
+    limit = max(1, min(int(limit or 30), 100))
+    query = "SELECT id, timestamp, event_type, object_id, details, synced FROM system_logs"
+    params = []
+
+    if before_id is not None:
+        query += " WHERE id < ?"
+        params.append(int(before_id))
+
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit + 1)
+
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = [format_log_entry(row) for row in rows]
+    next_before_id = rows[-1][0] if rows else None
+    return items, has_more, next_before_id
+
 @app.route("/")
 def index():
     return render_template("index.html")
+
+@app.route("/logs")
+def logs_page():
+    initial_logs, has_more, next_before_id = fetch_log_rows(limit=30)
+    return render_template(
+        "logs.html",
+        initial_logs=initial_logs,
+        has_more=has_more,
+        next_before_id=next_before_id,
+    )
 
 def generate_stream():
     global output_frame_bgr
@@ -200,17 +272,42 @@ def api_data():
         "storage_free_gb": get_storage_free_gb()
     })
 
+@app.route("/api/logs")
+def api_logs():
+    before_id = request.args.get("before_id", type=int)
+    limit = request.args.get("limit", default=30, type=int)
+    items, has_more, next_before_id = fetch_log_rows(before_id=before_id, limit=limit)
+    return jsonify({
+        "items": items,
+        "has_more": has_more,
+        "next_before_id": next_before_id,
+    })
+
 @app.route("/api/action", methods=["POST"])
 def api_action():
     global TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM, recording_enabled
     action = request.json.get("action")
-    if action == "in_plus": TOTAL_IN += 1
-    elif action == "in_minus": TOTAL_IN = max(0, TOTAL_IN - 1)
-    elif action == "out_plus": TOTAL_OUT += 1
-    elif action == "out_minus": TOTAL_OUT = max(0, TOTAL_OUT - 1)
-    elif action == "room_plus": PEOPLE_IN_ROOM += 1
-    elif action == "room_minus": PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1)
-    elif action == "toggle_record": recording_enabled = not recording_enabled
+    if action == "in_plus":
+        TOTAL_IN += 1
+        log_event("MANUAL_IN", details="Người dùng tăng bộ đếm vào")
+    elif action == "in_minus":
+        TOTAL_IN = max(0, TOTAL_IN - 1)
+        log_event("MANUAL_IN", details="Người dùng giảm bộ đếm vào")
+    elif action == "out_plus":
+        TOTAL_OUT += 1
+        log_event("MANUAL_OUT", details="Người dùng tăng bộ đếm ra")
+    elif action == "out_minus":
+        TOTAL_OUT = max(0, TOTAL_OUT - 1)
+        log_event("MANUAL_OUT", details="Người dùng giảm bộ đếm ra")
+    elif action == "room_plus":
+        PEOPLE_IN_ROOM += 1
+        log_event("MANUAL_ROOM", details="Người dùng tăng số người trong khu vực")
+    elif action == "room_minus":
+        PEOPLE_IN_ROOM = max(0, PEOPLE_IN_ROOM - 1)
+        log_event("MANUAL_ROOM", details="Người dùng giảm số người trong khu vực")
+    elif action == "toggle_record":
+        recording_enabled = not recording_enabled
+        log_event("TOGGLE_RECORD", details="Đã thay đổi trạng thái ghi hình")
     save_data()
     return jsonify({"status": "success"})
 

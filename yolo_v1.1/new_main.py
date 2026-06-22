@@ -655,9 +655,9 @@ def main():
             timestamp_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             info_str = f"IN: {TOTAL_IN} | OUT: {TOTAL_OUT} | ROOM: {PEOPLE_IN_ROOM}"
             
-            cv2.rectangle(display_frame, (5, 5), (420, 65), (0, 0, 0), -1)
-            cv2.putText(display_frame, timestamp_str, (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            cv2.putText(display_frame, info_str, (15, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # cv2.rectangle(display_frame, (5, 5), (200, 30), (0, 0, 0), -1)
+            cv2.putText(display_frame, timestamp_str, (15, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            cv2.putText(display_frame, info_str, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             if recording_enabled:
                 if video_writer is None or (time.time() - chunk_start_time) >= CHUNK_DURATION:
