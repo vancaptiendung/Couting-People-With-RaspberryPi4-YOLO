@@ -177,7 +177,7 @@ def nightly_sync_routine():
 # 3. HỆ THỐNG GHI HÌNH (Chống Lag AI & Chống Sập Nguồn)
 # =====================================================================
 VIDEO_DIR = "videos"
-MAX_VIDEOS = 6
+MAX_VIDEOS = 24
 CHUNK_DURATION = 30 * 60 
 if not os.path.exists(VIDEO_DIR): os.makedirs(VIDEO_DIR)
 
