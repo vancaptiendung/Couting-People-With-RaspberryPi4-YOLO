@@ -19,11 +19,10 @@ from flask import Flask, Response, render_template, jsonify, request
 from picamera2 import Picamera2
 
 # LOAD API KEY 
-import os
 from dotenv import load_dotenv
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY")
+API_KEY = "nothing"
 
 if not API_KEY:
     raise ValueError("[LỖI BẢO MẬT] Không tìm thấy API_KEY trong file .env!")
@@ -70,7 +69,6 @@ def init_db():
         conn.commit()
 
 def log_event(event_type, object_id=None, details=""):
-    """Ghi âm thầm lịch sử vào SQLite mà không làm lag AI"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with sqlite3.connect(DB_FILE) as conn:
