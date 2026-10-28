@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SecureView Pro - People Counter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+    <style>
+        :root {
+            --bg: #ffffff;
+            --surface: #f8f9fa;
+            --surface-raised: #ffffff;
+            --border: #fee2e2;
+            --border-subtle: #fee2e2;
+            --text: #09090b;
+            --text-muted: #71717a;
+            --primary: #e11d48;
+            --primary-glow: rgba(225, 29, 72, 0.2);
+            --success: #10b981;
+            --danger: #e11d48;
+            --glass: rgba(255, 255, 255, 0.8);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+
+        .app-shell {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .topbar {
+            height: 72px;
+            padding: 0 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-subtle);
+            z-index: 100;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .brand-mark {
+            width: 44px;
+            height: 44px;
+            background: var(--primary);
+            border-radius: 12px;
+            display: grid;
+            place-items: center;
+            box-shadow: 0 4px 12px var(--primary-glow);
+        }
+
+        .brand-mark .material-symbols-outlined {
+            color: white;
+            font-size: 24px;
+            font-variation-settings: 'FILL' 1;
+        }
+
+        .brand-title {
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            color: var(--text);
+        }
+
+        .brand-subtitle {
+            font-size: 12px;
+            color: var(--primary);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .topbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logs-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 100px;
+            border: 1px solid var(--border-subtle);
+            background: white;
+            color: var(--text);
+            font-size: 12px;
+            font-weight: 700;
+            text-decoration: none;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+
+        .logs-link:hover {
+            transform: translateY(-1px);
+            border-color: var(--primary);
+            box-shadow: 0 8px 20px rgba(225, 29, 72, 0.08);
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            background: white;
+            border: 1px solid var(--border-subtle);
+            border-radius: 100px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 10px var(--success);
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        .pulse-crimson {
+            background: var(--primary) !important;
+            box-shadow: 0 0 10px var(--primary) !important;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .layout {
+            flex: 1;
+            padding: 24px;
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 24px;
+            overflow: hidden;
+        }
+
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: 24px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .video-container {
+            position: relative;
+            flex: 1;
+            background: #f1f1f1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .video-stream {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .video-overlay {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .glass-badge {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            padding: 8px 14px;
+            border-radius: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--text);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .glass-badge strong {
+            color: var(--primary);
+        }
+
+        .control-panel {
+            padding: 24px;
+            gap: 24px;
+        }
+
+        .header-section {
+            margin-bottom: 8px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .subtle {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .stat-card {
+            background: var(--surface-raised);
+            border: 1px solid var(--border-subtle);
+            padding: 20px;
+            border-radius: 20px;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.02);
+        }
+
+        .stat-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(225, 29, 72, 0.08);
+        }
+
+        .stat-card.wide {
+            grid-column: span 2;
+        }
+
+        .stat-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-label-muted {
+            color: var(--text-muted);
+        }
+
+        .stat-value-container {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 42px;
+            font-weight: 700;
+            line-height: 1;
+            color: var(--text);
+        }
+
+        .count-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: white;
+            color: var(--text);
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+        }
+
+        .btn-icon .material-symbols-outlined {
+            font-size: 18px;
+        }
+
+        .capacity-container {
+            margin-top: 12px;
+        }
+
+        .progress-wrapper {
+            height: 10px;
+            background: #f1f1f1;
+            border-radius: 100px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: var(--primary);
+            border-radius: 100px;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .metric-card {
+            background: white;
+            border: 1px solid var(--border-subtle);
+            padding: 16px;
+            border-radius: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .metric-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .metric-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--primary-glow);
+            border-radius: 10px;
+            display: grid;
+            place-items: center;
+            color: var(--primary);
+        }
+
+        .metric-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .metric-value-text {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 16px;
+            border-radius: 16px;
+            border: none;
+            background: var(--primary);
+            color: white;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            box-shadow: 0 8px 24px var(--primary-glow);
+            transition: all 0.3s;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 32px var(--primary-glow);
+            filter: brightness(1.1);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+
+        @media (max-width: 1200px) {
+            .layout {
+                grid-template-columns: 1fr;
+                overflow-y: auto;
+            }
+
+            .app-shell {
+                height: auto;
+                overflow: visible;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .topbar {
+                padding: 0 16px;
+                height: auto;
+                min-height: 72px;
+                gap: 12px;
+            }
+
+            .brand-subtitle {
+                display: none;
+            }
+
+            .topbar-actions {
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+
+            .stat-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stat-card.wide {
+                grid-column: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-mark">
+                    <span class="material-symbols-outlined">shield_with_heart</span>
+                </div>
+                <div>
+                    <h1 class="brand-title">LAB E3.1</h1>
+                    <p class="brand-subtitle">DashBoard</p>
+                </div>
+            </div>
+
+            <div class="topbar-actions">
+                <a class="logs-link" href="/logs">
+                    <span class="material-symbols-outlined">receipt_long</span>
+                    <span>Logs</span>
+                </a>
+                <div class="status-pill">
+                    <span class="status-dot pulse"></span>
+                    <span>Hệ thống: Hoạt động</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="layout">
+            <div class="panel">
+                <div class="video-container">
+                    <img alt="Mất kết nối camera" class="video-stream" id="video-stream" src="/video_feed" />
+                    <div class="video-overlay">
+                        <div class="glass-badge">FPS Camera: <strong id="val-cam-fps">0.0</strong></div>
+                        <div class="glass-badge">FPS AI: <strong id="val-ai-fps">0.0</strong></div>
+                        <!-- <div class="glass-badge" id="btn-record-state" style="display: flex; align-items: center; gap: 8px;">
+                            <span class="status-dot pulse-crimson"></span>
+                            <span style="font-weight: 700;">REC</span>
+                        </div> -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel control-panel">
+                <div class="header-section">
+                    <h2 class="section-title">Bảng điều khiển</h2>
+                    <p class="subtle">Giám sát lưu lượng và hiệu năng thời gian thực</p>
+                </div>
+
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="stat-head">
+                            <span class="stat-label">
+                                <span class="material-symbols-outlined">login</span>
+                                Vào
+                            </span>
+                            <div class="count-controls">
+                                <button aria-label="Giảm" class="btn-icon" onclick="sendAction('in_minus')">
+                                    <span class="material-symbols-outlined">remove</span>
+                                </button>
+                                <button aria-label="Tăng" class="btn-icon" onclick="sendAction('in_plus')">
+                                    <span class="material-symbols-outlined">add</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="stat-value" id="val-in">0</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-head">
+                            <span class="stat-label stat-label-muted">
+                                <span class="material-symbols-outlined">logout</span>
+                                Ra
+                            </span>
+                            <div class="count-controls">
+                                <button aria-label="Giảm" class="btn-icon" onclick="sendAction('out_minus')">
+                                    <span class="material-symbols-outlined">remove</span>
+                                </button>
+                                <button aria-label="Tăng" class="btn-icon" onclick="sendAction('out_plus')">
+                                    <span class="material-symbols-outlined">add</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="stat-value" id="val-out">0</div>
+                    </div>
+
+                    <div class="stat-card wide">
+                        <div class="stat-head">
+                            <span class="stat-label">
+                                <span class="material-symbols-outlined">groups</span>
+                                Trong khu vực
+                            </span>
+                            <span class="subtle" style="font-family: 'JetBrains Mono'; font-weight: 700; color: var(--primary);">
+                                <span id="val-occupancy">0%</span>
+                            </span>
+                        </div>
+                        <div class="stat-value-container">
+                            <div class="stat-value" id="val-room">0</div>
+                            <div class="subtle">Tối đa: 60 người</div>
+                        </div>
+                        <div class="capacity-container">
+                            <div class="progress-wrapper">
+                                <div class="progress-bar" id="room-progress" style="width: 0%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-info">
+                        <div class="metric-icon">
+                            <span class="material-symbols-outlined">thermostat</span>
+                        </div>
+                        <div>
+                            <p class="metric-label">Nhiệt độ CPU</p>
+                            <p class="subtle" id="text-recording">Hệ thống ổn định</p>
+                        </div>
+                    </div>
+                    <div class="metric-value-text"><span id="val-cpu-temp">0.0</span>°C</div>
+                </div>
+
+                <button class="btn-primary" onclick="sendAction('toggle_record')">
+                    <!-- <span class="material-symbols-outlined">fiber_manual_record</span> -->
+                    Chưa cập nhật
+                </button>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        function updateDashboard() {
+            fetch('/api/data')
+                .then((response) => response.json())
+                .then((data) => {
+                    const occupancy = Math.min(100, Math.round((Number(data.room) / 60) * 100));
+
+                    document.getElementById('val-in').innerText = data.in;
+                    document.getElementById('val-out').innerText = data.out;
+                    document.getElementById('val-room').innerText = data.room;
+                    document.getElementById('val-cam-fps').innerText = Number(data.cam_fps).toFixed(1);
+                    document.getElementById('val-ai-fps').innerText = Number(data.ai_fps).toFixed(1);
+                    document.getElementById('val-cpu-temp').innerText = Number(data.cpu_temp).toFixed(1);
+                    document.getElementById('val-occupancy').innerText = occupancy + '%';
+                    document.getElementById('room-progress').style.width = occupancy + '%';
+
+                    // const btnRec = document.getElementById('btn-record-state');
+                    const textRec = document.getElementById('text-recording');
+
+                    if (data.recording) {
+                        // btnRec.innerHTML = '<span class="status-dot pulse-crimson"></span><span style="font-weight: 700;">REC</span>';
+                        textRec.innerText = 'Hệ thống đang làm việc';
+                        textRec.style.color = 'var(--primary)';
+                    } else {
+                        // btnRec.innerHTML = '<span class="status-dot" style="background: #94a3b8; box-shadow: none;"></span><span>STOP</span>';
+                        textRec.innerText = 'Hệ thống ổn định';
+                        textRec.style.color = 'var(--text-muted)'; 
+                    }
+                })
+                .catch(() => {
+                    const textRec = document.getElementById('text-recording');
+                    if (textRec) {
+                        textRec.innerText = 'Mất kết nối Pi...';
+                        textRec.style.color = 'var(--danger)';
+                    }
+                });
+        }
+
+        function sendAction(actionType) {
+            fetch('/api/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: actionType })
+            }).then(() => updateDashboard());
+        }
+
+        setInterval(updateDashboard, 1000);
+        updateDashboard();
+    </script>
+</body>
+</html>

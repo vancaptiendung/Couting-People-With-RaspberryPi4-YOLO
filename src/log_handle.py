@@ -6,23 +6,26 @@ import logging
 import time
 import traceback
 import json
+from datetime import datetime
 
-def log_event(event_type, object_id=None, details=""):
+
+
+def log_event(event_type, object_id=None, details="", data : list = [0,0,0]):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO system_logs (timestamp, event_type, object_id, went_in, went_out, inRoom, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (timestamp, event_type, object_id, TOTAL_IN, TOTAL_OUT, PEOPLE_IN_ROOM, details)
+                (timestamp, event_type, object_id, data[0], data[1], data[2], details)
             )
             conn.commit()
     except Exception as e:
         print(f"[DB ERROR] Lỗi ghi DB: {e}")
 
-def save_data():
+def save_data(data):
     with open(DATA_FILE, "w") as f:
-        json.dump({"in": TOTAL_IN, "out": TOTAL_OUT, "room": PEOPLE_IN_ROOM}, f)
+        json.dump({"in": data[0], "out": data[1], "room": data[2]}, f)
 
 def load_data():
     if os.path.exists(DATA_FILE):

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureView Pro - Log Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #131313;
+            --surface: #171717;
+            --surface-2: #1f1f1f;
+            --surface-3: #2a2a2a;
+            --border: #5c3f40;
+            --text: #e2e2e2;
+            --text-muted: #c8c6c5;
+            --accent: #ffb3b6;
+            --accent-strong: #e11d48;
+            --success: #6ee7b7;
+            --warning: #f59e0b;
+            --danger: #ffb4ab;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: 'Inter', sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(225, 29, 72, 0.10), transparent 24%),
+                linear-gradient(180deg, #171717 0%, var(--bg) 42%, #0f0f0f 100%);
+        }
+
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+
+        .page {
+            min-height: 100vh;
+            padding: 18px;
+        }
+
+        .terminal {
+            width: min(1180px, 100%);
+            margin: 0 auto;
+            border: 1px solid rgba(92, 63, 64, 0.85);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(23, 23, 23, 0.98), rgba(15, 15, 15, 0.98));
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+            overflow: hidden;
+        }
+
+        .terminal-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(92, 63, 64, 0.65);
+            background: rgba(18, 18, 18, 0.95);
+        }
+
+        .dots {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            background: #474646;
+        }
+
+        .dot.red { background: var(--danger); }
+        .dot.yellow { background: var(--warning); }
+        .dot.green { background: var(--success); }
+
+        .terminal-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .terminal-title span:last-child {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .terminal-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(92, 63, 64, 0.7);
+            background: rgba(31, 31, 31, 0.85);
+            color: var(--text);
+            font-size: 12px;
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .terminal-body {
+            padding: 16px;
+        }
+
+        .prompt-line {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+            color: var(--text-muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .prompt {
+            color: var(--success);
+        }
+
+        .command {
+            color: #fff;
+        }
+
+        .log-list {
+            display: grid;
+            gap: 10px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.55;
+        }
+
+        .log-line {
+            display: grid;
+            grid-template-columns: auto auto 1fr;
+            gap: 12px;
+            align-items: start;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(92, 63, 64, 0.55);
+            background: rgba(31, 31, 31, 0.78);
+        }
+
+        .log-time {
+            color: var(--accent);
+            white-space: nowrap;
+        }
+
+        .log-tag {
+            min-width: 96px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            text-align: center;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .tone-success .log-tag { color: var(--success); }
+        .tone-danger .log-tag { color: var(--danger); }
+        .tone-warning .log-tag { color: var(--warning); }
+        .tone-info .log-tag { color: var(--accent-strong); }
+        .tone-manual .log-tag { color: var(--text-muted); }
+        .tone-neutral .log-tag { color: var(--text-muted); }
+
+        .log-message {
+            color: var(--text);
+            word-break: break-word;
+        }
+
+        .loading-box,
+        .empty-box {
+            margin-top: 14px;
+            padding: 18px 14px;
+            border-radius: 12px;
+            border: 1px dashed rgba(92, 63, 64, 0.8);
+            background: rgba(31, 31, 31, 0.55);
+            color: var(--text-muted);
+            text-align: center;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+
+        .loading-box {
+            display: none;
+        }
+
+        .loading-box.visible {
+            display: block;
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            margin: 0 auto 10px;
+            border-radius: 999px;
+            border: 2px solid rgba(255, 255, 255, 0.18);
+            border-top-color: var(--accent);
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .sentinel { height: 1px; }
+        .hidden { display: none !important; }
+
+        @media (max-width: 720px) {
+            .page { padding: 12px; }
+            .terminal-bar { flex-direction: column; align-items: flex-start; }
+            .terminal-actions { width: 100%; flex-wrap: wrap; }
+            .log-line { grid-template-columns: 1fr; gap: 6px; }
+            .log-tag { min-width: 0; width: fit-content; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <section class="terminal">
+            <div class="terminal-bar">
+                <div class="dots" aria-hidden="true">
+                    <span class="dot red"></span>
+                    <span class="dot yellow"></span>
+                    <span class="dot green"></span>
+                </div>
+                <div class="terminal-title">
+                    <span class="material-symbols-outlined">terminal</span>
+                    <span>cctv_logs.db</span>
+                </div>
+                <div class="terminal-actions">
+                    <a class="pill" href="/">Quay lại dashboard</a>
+                </div>
+            </div>
+
+            <div class="terminal-body">
+                <!-- <div class="prompt-line">
+                    <span class="prompt">pi@secureview:~$</span>
+                    <span class="command">tail -f cctv_logs.db</span>
+                </div> -->
+
+                {% if initial_logs %}
+                <div id="logList" class="log-list">
+                    {% for log in initial_logs %}
+                    <div class="log-line tone-{{ log.tone }}" data-id="{{ log.id }}">
+                        <span class="log-time">{{ log.timestamp }}</span>
+                        <span class="log-tag">{{ log.title }}</span>
+                        <span class="log-message">{{ log.message }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div id="emptyState" class="empty-box">Chưa có log nào.</div>
+                <div id="logList" class="log-list"></div>
+                {% endif %}
+
+                <div id="loadingState" class="loading-box">
+                    <div class="spinner"></div>
+                    Đang tải thêm log...
+                </div>
+                <div id="sentinel" class="sentinel"></div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const state = {
+            cursor: {{ next_before_id | tojson }},
+            hasMore: {{ 'true' if has_more else 'false' }},
+            loading: false,
+        };
+
+        const logList = document.getElementById('logList');
+        const sentinel = document.getElementById('sentinel');
+        const loadingState = document.getElementById('loadingState');
+        const emptyState = document.getElementById('emptyState');
+
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderLogItem(item) {
+            return `
+                <div class="log-line tone-${escapeHtml(item.tone)}" data-id="${escapeHtml(item.id)}">
+                    <span class="log-time">${escapeHtml(item.timestamp)}</span>
+                    <span class="log-tag">${escapeHtml(item.title)}</span>
+                    <span class="log-message">${escapeHtml(item.message)}</span>
+                </div>
+            `;
+        }
+
+        function setLoading(visible) {
+            loadingState.classList.toggle('visible', visible);
+        }
+
+        async function loadMoreLogs() {
+            if (!state.hasMore || state.loading || state.cursor === null || state.cursor === undefined) {
+                return;
+            }
+
+            state.loading = true;
+            setLoading(true);
+
+            try {
+                const response = await fetch(`/api/logs?before_id=${state.cursor}&limit=30`);
+                const data = await response.json();
+
+                if (Array.isArray(data.items) && data.items.length) {
+                    if (emptyState) {
+                        emptyState.classList.add('hidden');
+                    }
+                    logList.insertAdjacentHTML('beforeend', data.items.map(renderLogItem).join(''));
+                    state.cursor = data.next_before_id;
+                }
+
+                state.hasMore = Boolean(data.has_more);
+
+                if (!state.hasMore || state.cursor === null) {
+                    observer.disconnect();
+                    sentinel.classList.add('hidden');
+                }
+            } catch (error) {
+                console.error('Failed to load logs', error);
+            } finally {
+                state.loading = false;
+                setLoading(false);
+            }
+        }
+
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                loadMoreLogs();
+            }
+        }, {
+            root: null,
+            rootMargin: '280px 0px',
+            threshold: 0.01,
+        });
+
+        if (state.hasMore) {
+            observer.observe(sentinel);
+        } else {
+            sentinel.classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
